@@ -34,7 +34,6 @@ HAND_CONNECTIONS = [
     (0, 17),
 ]
 
-
 def draw_hand_skeleton(frame, landmarks, w, h):
     pts = [(int(lm.x * w), int(lm.y * h)) for lm in landmarks]
     for a, b in HAND_CONNECTIONS:
@@ -43,12 +42,10 @@ def draw_hand_skeleton(frame, landmarks, w, h):
         cv2.circle(frame, p, 3, (0, 255, 120), -1)
     return pts
 
-
 # ---------- LIVE FILTERS ----------
 def make_thermal(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     return cv2.applyColorMap(gray, cv2.COLORMAP_JET)
-
 
 def make_xray(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -60,10 +57,8 @@ def make_xray(frame):
     ghost[edges > 0] = (255, 255, 255)
     return ghost
 
-
 def make_invert(frame):
     return cv2.bitwise_not(frame)
-
 
 def make_edge_glow(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -80,7 +75,6 @@ def make_pixelate(frame):
 
 
 def make_glitch(frame):
-    """Channel RGB digeser + potongan garis horizontal digeser acak -> datamosh."""
     h, w = frame.shape[:2]
     b, g, r = cv2.split(frame)
     shift = 10
@@ -97,7 +91,6 @@ def make_glitch(frame):
 
 
 def make_cartoon(frame):
-    """Warna diratain (bilateral filter) + garis tepi hitam tegas -> komik."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     gray_blur = cv2.medianBlur(gray, 5)
     edges = cv2.adaptiveThreshold(
@@ -108,7 +101,6 @@ def make_cartoon(frame):
 
 
 def make_neon(frame):
-    """Garis neon cyan-magenta dengan glow/bloom di sekitarnya."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(gray, 40, 120)
     edges = cv2.dilate(edges, np.ones((2, 2), np.uint8))
@@ -118,12 +110,6 @@ def make_neon(frame):
 
 
 def make_sketch(frame):
-    """Efek sketsa pensil berwarna, pakai modul photo bawaan OpenCV.
-
-    Diproses di resolusi setengah lalu di-upscale lagi -> lebih ringan,
-    dikombinasikan dengan crop bounding-box di render_window jadi jauh
-    lebih cepat daripada sebelumnya (full frame + sigma_s besar).
-    """
     h, w = frame.shape[:2]
     small = cv2.resize(frame, (max(1, w // 2), max(1, h // 2)), interpolation=cv2.INTER_LINEAR)
     _, color_sketch = cv2.pencilSketch(small, sigma_s=40, sigma_r=0.07, shade_factor=0.05)
@@ -131,7 +117,6 @@ def make_sketch(frame):
 
 
 def make_duotone(frame):
-    """Gradasi 2 warna (ungu gelap -> oranye terang) ala poster/film noir."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
     shadow = np.array([120, 30, 80], dtype=np.float32)     # BGR ungu tua
     highlight = np.array([40, 190, 255], dtype=np.float32)  # BGR oranye terang
@@ -140,7 +125,6 @@ def make_duotone(frame):
 
 
 def make_night_vision(frame):
-    """Hijau night-vision + noise butiran + vignette gelap di pinggir."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     gray = cv2.equalizeHist(gray)
     out = np.zeros_like(frame)
@@ -158,22 +142,89 @@ def make_night_vision(frame):
     return out
 
 
-def make_kaleidoscope(frame):
-    """Kuadran kiri-atas dicerminkan ke 3 sisi lain -> efek kaleidoskop simetris.
+_HALFTONE_CACHE = {}
 
-    Catatan: karena sekarang dipanggil dengan crop (bukan full frame),
-    kuadran diambil dari crop tersebut -> efeknya jadi konsisten dengan
-    isi jendela portal, bukan lagi dari pojok kiri-atas frame kamera.
-    """
+
+def _get_halftone_mask(h, w, cell=6):
+    key = (h, w, cell)
+    if key in _HALFTONE_CACHE:
+        return _HALFTONE_CACHE[key]
+    mask = np.zeros((h, w), dtype=np.float32)
+    radius = cell // 2 - 1
+    for y in range(0, h, cell):
+        for x in range(0, w, cell):
+            cv2.circle(mask, (x + cell // 2, y + cell // 2), max(1, radius), 1.0, -1)
+    _HALFTONE_CACHE[key] = mask
+    return mask
+
+
+def make_spiderverse(frame):
+    h, w = frame.shape[:2]
+
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV).astype(np.float32)
+    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * 1.6, 0, 255)
+    hsv[:, :, 2] = np.clip(hsv[:, :, 2] * 1.1, 0, 255)
+    vivid = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray_blur = cv2.medianBlur(gray, 5)
+    edges = cv2.adaptiveThreshold(
+        gray_blur, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 7, 7
+    )
+    edges = cv2.erode(edges, np.ones((2, 2), np.uint8))  # garis makin tebal
+    toon = cv2.bitwise_and(vivid, vivid, mask=edges)
+    toon[edges == 0] = (0, 0, 0)
+
+    dot_mask = _get_halftone_mask(h, w, cell=6)
+    darkness = 1.0 - (gray.astype(np.float32) / 255.0)
+    halftone_strength = np.clip(darkness * 1.4, 0, 1) * dot_mask
+    halftone_overlay = (halftone_strength[..., None] * np.array([20, 20, 20])).astype(np.uint8)
+    toon = cv2.subtract(toon, halftone_overlay)
+
+    b, g, r = cv2.split(toon)
+    shift = max(2, w // 220)
+    r_ghost = np.roll(r, shift, axis=1)
+    b_ghost = np.roll(b, -shift, axis=1)
+    ghosted = cv2.merge([b_ghost, g, r_ghost])
+    result = cv2.addWeighted(toon, 0.7, ghosted, 0.3, 0)
+
+    return result
+
+def make_emboss(frame):
+    kernel = np.array([
+        [-2, -1, 0],
+        [-1,  1, 1],
+        [ 0,  1, 2],
+    ], dtype=np.float32)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    embossed = cv2.filter2D(gray, -1, kernel)
+    embossed = np.clip(embossed + 128, 0, 255).astype(np.uint8)
+    return cv2.cvtColor(embossed, cv2.COLOR_GRAY2BGR)
+
+def make_hologram(frame):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    tinted = cv2.merge([gray, gray, (gray * 0.15).astype(np.uint8)])  # BGR: biru & hijau kuat, merah minim -> cyan
+
+    h, w = tinted.shape[:2]
+    scan = tinted.copy()
+    scan[::3, :, :] = (scan[::3, :, :] * 0.45).astype(np.uint8)  # garis scanline tiap 3 baris
+
+    glow = cv2.GaussianBlur(scan, (0, 0), 4)
+    result = cv2.addWeighted(scan, 0.75, glow, 0.5, 0)
+
+    noise = np.random.randint(0, 15, (h, w), dtype=np.uint8)
+    result[:, :, 0] = cv2.add(result[:, :, 0], noise)
+    result[:, :, 1] = cv2.add(result[:, :, 1], noise)
+    return result
+
+def make_kaleidoscope(frame):
     h, w = frame.shape[:2]
     half_w, half_h = max(1, w // 2), max(1, h // 2)
     quadrant = cv2.resize(frame[0:half_h, 0:half_w], (half_w, half_h))
     top = np.hstack([quadrant, cv2.flip(quadrant, 1)])
     bottom = np.hstack([cv2.flip(quadrant, 0), cv2.flip(quadrant, -1)])
     result = np.vstack([top, bottom])
-    # pastikan ukuran balik sama persis dengan crop asli (jaga2 pembulatan ganjil)
     return cv2.resize(result, (w, h))
-
 
 LIVE_FILTERS = {
     "THERMAL": make_thermal,
@@ -188,6 +239,9 @@ LIVE_FILTERS = {
     "DUOTONE": make_duotone,
     "NIGHTVISION": make_night_vision,
     "KALEIDOSCOPE": make_kaleidoscope,
+    "SPIDERVERSE": make_spiderverse,
+    "EMBOSS": make_emboss,
+    "HOLOGRAM": make_hologram,
 }
 
 MODES = list(LIVE_FILTERS.keys())
@@ -231,7 +285,6 @@ def render_window(frame, filter_fn, quad_pts):
     result[y1:y2, x1:x2] = result_crop
     return result
 
-
 def get_quad_from_hands(hands_pts):
     if len(hands_pts) != 2:
         return None
@@ -246,12 +299,10 @@ def get_quad_from_hands(hands_pts):
     right_top, right_bottom = top_bottom(right_hand)
     return (left_top, right_top, right_bottom, left_bottom)
 
-
 def pinch_distance(hand_pts):
     x1, y1 = hand_pts[THUMB_TIP]
     x2, y2 = hand_pts[INDEX_TIP]
     return math.hypot(x2 - x1, y2 - y1)
-
 
 # ---------- GESTURE: pinch -> buka cepat -> ganti filter ----------
 CLOSE_PINCH = 45
@@ -259,7 +310,6 @@ SPREAD_PINCH = 130
 GESTURE_WINDOW = 1.5
 COOLDOWN = 0.8
 GRACE_PERIOD = 0.3
-
 
 class GestureSwitcher:
     def __init__(self, modes):
@@ -314,7 +364,6 @@ class GestureSwitcher:
 
         return status_text
 
-
 # ---------- MAIN LOOP ----------
 def main():
     print("Mode yang aktif:", MODES)
@@ -354,8 +403,6 @@ def main():
                 color = (0, 255, 0) if pd < CLOSE_PINCH else \
                         (0, 100, 255) if pd > SPREAD_PINCH else (200, 200, 200)
                 cv2.line(frame, (tx, ty), (ix, iy), color, 2)
-                cv2.putText(frame, f"{int(pd)}px", ((tx + ix) // 2, (ty + iy) // 2 - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
         quad = get_quad_from_hands(hands_pts)
         min_pinch = min(pinch_values) if pinch_values else None
@@ -363,17 +410,8 @@ def main():
 
         if quad:
             frame = render_window(frame, LIVE_FILTERS[switcher.mode], quad)
-        else:
-            cv2.putText(frame, "Angkat 2 tangan (jempol+telunjuk) buat bikin frame",
-                        (20, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
 
-        cv2.putText(frame, f"Mode: {switcher.mode}  ({switcher.mode_idx + 1}/{len(MODES)})",
-                    (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        if status_text:
-            cv2.putText(frame, status_text, (20, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 220, 255), 2)
-
-        cv2.imshow("Hand Portal FX - tekan q untuk keluar", frame)
+        cv2.imshow("Press Q to quit", frame)
         key = cv2.waitKey(1) & 0xFF
         if key == ord("q"):
             break
@@ -385,7 +423,6 @@ def main():
     cap.release()
     cv2.destroyAllWindows()
     landmarker.close()
-
 
 if __name__ == "__main__":
     main()
