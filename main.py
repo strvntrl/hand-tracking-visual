@@ -17,30 +17,19 @@ options = HandLandmarkerOptions(
     base_options=BaseOptions(model_asset_path=MODEL_PATH),
     running_mode=VisionRunningMode.VIDEO,
     num_hands=2,
-    min_hand_detection_confidence=0.5,
-    min_tracking_confidence=0.5,
+    min_hand_detection_confidence=0.4,
+    min_tracking_confidence=0.4,
 )
 landmarker = HandLandmarker.create_from_options(options)
 
 THUMB_TIP = 4
 INDEX_TIP = 8
+MIDDLE_TIP = 12
+RING_TIP = 16
+DETECT_SCALE = 0.5
 
-HAND_CONNECTIONS = [
-    (0, 1), (1, 2), (2, 3), (3, 4),
-    (0, 5), (5, 6), (6, 7), (7, 8),
-    (5, 9), (9, 10), (10, 11), (11, 12),
-    (9, 13), (13, 14), (14, 15), (15, 16),
-    (13, 17), (17, 18), (18, 19), (19, 20),
-    (0, 17),
-]
-
-def draw_hand_skeleton(frame, landmarks, w, h):
-    pts = [(int(lm.x * w), int(lm.y * h)) for lm in landmarks]
-    for a, b in HAND_CONNECTIONS:
-        cv2.line(frame, pts[a], pts[b], (0, 200, 120), 1)
-    for p in pts:
-        cv2.circle(frame, p, 3, (0, 255, 120), -1)
-    return pts
+def get_hand_points(landmarks, w, h):
+    return [(int(lm.x * w), int(lm.y * h)) for lm in landmarks]
 
 # ---------- LIVE FILTERS ----------
 def make_thermal(frame):
@@ -67,12 +56,10 @@ def make_edge_glow(frame):
     colored = cv2.applyColorMap(edges, cv2.COLORMAP_SPRING)
     return cv2.bitwise_and(colored, colored, mask=edges)
 
-
 def make_pixelate(frame):
     h, w = frame.shape[:2]
     small = cv2.resize(frame, (32, 18), interpolation=cv2.INTER_LINEAR)
     return cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
-
 
 def make_glitch(frame):
     h, w = frame.shape[:2]
@@ -89,7 +76,6 @@ def make_glitch(frame):
         out[y:y + slice_h] = np.roll(out[y:y + slice_h], dx, axis=1)
     return out
 
-
 def make_cartoon(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     gray_blur = cv2.medianBlur(gray, 5)
@@ -99,7 +85,6 @@ def make_cartoon(frame):
     color = cv2.bilateralFilter(frame, 9, 250, 250)
     return cv2.bitwise_and(color, color, mask=edges)
 
-
 def make_neon(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(gray, 40, 120)
@@ -108,13 +93,11 @@ def make_neon(frame):
     glow = cv2.GaussianBlur(colored, (0, 0), 6)
     return cv2.add(colored, glow)
 
-
 def make_sketch(frame):
     h, w = frame.shape[:2]
     small = cv2.resize(frame, (max(1, w // 2), max(1, h // 2)), interpolation=cv2.INTER_LINEAR)
     _, color_sketch = cv2.pencilSketch(small, sigma_s=40, sigma_r=0.07, shade_factor=0.05)
     return cv2.resize(color_sketch, (w, h), interpolation=cv2.INTER_LINEAR)
-
 
 def make_duotone(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
@@ -122,7 +105,6 @@ def make_duotone(frame):
     highlight = np.array([40, 190, 255], dtype=np.float32)  # BGR oranye terang
     out = shadow[None, None, :] * (1 - gray[..., None]) + highlight[None, None, :] * gray[..., None]
     return out.astype(np.uint8)
-
 
 def make_night_vision(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -139,16 +121,17 @@ def make_night_vision(frame):
     vignette = np.clip(1 - (dist / max_dist) * 0.6, 0, 1)
     for c in range(3):
         out[:, :, c] = (out[:, :, c] * vignette).astype(np.uint8)
-    return out
-
 
 _HALFTONE_CACHE = {}
-
+_POINT_NOISE_CACHE = {}
+_CACHE_CAP = 40
 
 def _get_halftone_mask(h, w, cell=6):
     key = (h, w, cell)
     if key in _HALFTONE_CACHE:
         return _HALFTONE_CACHE[key]
+    if len(_HALFTONE_CACHE) >= _CACHE_CAP:
+        _HALFTONE_CACHE.clear()
     mask = np.zeros((h, w), dtype=np.float32)
     radius = cell // 2 - 1
     for y in range(0, h, cell):
@@ -157,6 +140,15 @@ def _get_halftone_mask(h, w, cell=6):
     _HALFTONE_CACHE[key] = mask
     return mask
 
+def _get_point_noise(h, w):
+    key = (h, w)
+    if key in _POINT_NOISE_CACHE:
+        return _POINT_NOISE_CACHE[key]
+    if len(_POINT_NOISE_CACHE) >= _CACHE_CAP:
+        _POINT_NOISE_CACHE.clear()
+    noise = np.random.rand(h, w).astype(np.float32)
+    _POINT_NOISE_CACHE[key] = noise
+    return noise
 
 def make_spiderverse(frame):
     h, w = frame.shape[:2]
@@ -171,7 +163,7 @@ def make_spiderverse(frame):
     edges = cv2.adaptiveThreshold(
         gray_blur, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 7, 7
     )
-    edges = cv2.erode(edges, np.ones((2, 2), np.uint8))  # garis makin tebal
+    edges = cv2.erode(edges, np.ones((2, 2), np.uint8))
     toon = cv2.bitwise_and(vivid, vivid, mask=edges)
     toon[edges == 0] = (0, 0, 0)
 
@@ -203,11 +195,11 @@ def make_emboss(frame):
 
 def make_hologram(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    tinted = cv2.merge([gray, gray, (gray * 0.15).astype(np.uint8)])  # BGR: biru & hijau kuat, merah minim -> cyan
+    tinted = cv2.merge([gray, gray, (gray * 0.15).astype(np.uint8)])
 
     h, w = tinted.shape[:2]
     scan = tinted.copy()
-    scan[::3, :, :] = (scan[::3, :, :] * 0.45).astype(np.uint8)  # garis scanline tiap 3 baris
+    scan[::3, :, :] = (scan[::3, :, :] * 0.45).astype(np.uint8)
 
     glow = cv2.GaussianBlur(scan, (0, 0), 4)
     result = cv2.addWeighted(scan, 0.75, glow, 0.5, 0)
@@ -217,14 +209,110 @@ def make_hologram(frame):
     result[:, :, 1] = cv2.add(result[:, :, 1], noise)
     return result
 
-def make_kaleidoscope(frame):
+def make_drawn(frame):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    inv = 255 - gray
+    blur = cv2.GaussianBlur(inv, (21, 21), 0)
+    inv_blur = 255 - blur
+    inv_blur[inv_blur == 0] = 1 
+    sketch = cv2.divide(gray, inv_blur, scale=256)
+    sketch_bgr = cv2.cvtColor(sketch, cv2.COLOR_GRAY2BGR)
+
+    color_wash = cv2.bilateralFilter(frame, 9, 60, 60)
+    result = cv2.addWeighted(color_wash, 0.35, sketch_bgr, 0.65, 0)
+    return result
+
+def make_dotscan(frame):
     h, w = frame.shape[:2]
-    half_w, half_h = max(1, w // 2), max(1, h // 2)
-    quadrant = cv2.resize(frame[0:half_h, 0:half_w], (half_w, half_h))
-    top = np.hstack([quadrant, cv2.flip(quadrant, 1)])
-    bottom = np.hstack([cv2.flip(quadrant, 0), cv2.flip(quadrant, -1)])
-    result = np.vstack([top, bottom])
-    return cv2.resize(result, (w, h))
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+    noise = _get_point_noise(h, w)
+    dot_mask = (noise < np.clip(gray, 0, 1) ** 1.2).astype(np.uint8) * 255
+    dot_mask = cv2.dilate(dot_mask, np.ones((2, 2), np.uint8))
+
+    warm_tint = np.array([60, 140, 255], dtype=np.float32) / 255.0  # BGR oranye hangat
+    colored = (dot_mask.astype(np.float32) / 255.0)[..., None] * warm_tint[None, None, :] * 255
+    return colored.astype(np.uint8)
+
+def make_riso(frame):
+    h, w = frame.shape[:2]
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+    shadow = np.array([80, 40, 10], dtype=np.float32)      
+    highlight = np.array([245, 235, 225], dtype=np.float32) 
+    duo = shadow[None, None, :] * (1 - gray[..., None]) + highlight[None, None, :] * gray[..., None]
+    duo = duo.astype(np.uint8)
+
+    dot_mask = _get_halftone_mask(h, w, cell=5)
+    darkness = 1.0 - gray
+    strength = np.clip(darkness * 1.3, 0, 1) * dot_mask
+    overlay = (strength[..., None] * np.array([40, 25, 10])).astype(np.uint8)
+    result = cv2.subtract(duo, overlay)
+
+    noise = np.random.randint(0, 12, (h, w), dtype=np.uint8)
+    for c in range(3):
+        result[:, :, c] = cv2.subtract(result[:, :, c], noise // 2)
+    return result
+
+def make_popart(frame):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape
+    dot_mask = _get_halftone_mask(h, w, cell=5)
+    darkness = 1.0 - gray.astype(np.float32) / 255.0
+    strength = np.clip(darkness * 1.6, 0, 1) * dot_mask
+
+    white = np.array([255, 255, 255], dtype=np.float32)
+    red = np.array([0, 0, 255], dtype=np.float32)  # BGR merah
+    result = white[None, None, :] * (1 - strength[..., None]) + red[None, None, :] * strength[..., None]
+    return result.astype(np.uint8)
+
+def make_acid(frame):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    levels = 5
+    step = 256 // levels
+    quant = (gray // step) * step
+    colored = cv2.applyColorMap(quant, cv2.COLORMAP_SUMMER)
+
+    b, g, r = cv2.split(colored)
+    shift = max(2, gray.shape[1] // 150)
+    r = np.roll(r, shift, axis=1)
+    b = np.roll(b, -shift, axis=1)
+    out = cv2.merge([b, g, r])
+
+    noise = np.random.randint(0, 20, gray.shape, dtype=np.uint8)
+    out[:, :, 1] = cv2.add(out[:, :, 1], noise)
+    return out
+
+def make_liquidchrome(frame):
+    h, w = frame.shape[:2]
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    metallic = cv2.applyColorMap(gray, cv2.COLORMAP_BONE)
+
+    map_x, map_y = np.meshgrid(np.arange(w), np.arange(h))
+    wave = 4 * np.sin(2 * np.pi * (map_y / 28.0))
+    map_x_wave = (map_x + wave).astype(np.float32)
+    map_y_f = map_y.astype(np.float32)
+    rippled = cv2.remap(metallic, map_x_wave, map_y_f,
+                         interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+
+    glow = cv2.GaussianBlur(rippled, (0, 0), 15)
+    result = cv2.addWeighted(rippled, 0.8, glow, 0.35, 0)
+    return result
+
+def make_filmgrain(frame):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    h, w = gray.shape
+    gray = np.clip(gray * 1.3 - 20, 0, 255)
+
+    noise = np.random.normal(0, 25, (h, w)).astype(np.float32)
+    grainy = np.clip(gray + noise, 0, 255)
+
+    Y, X = np.ogrid[:h, :w]
+    cx, cy = w / 2, h / 2
+    dist = np.sqrt((X - cx) ** 2 + (Y - cy) ** 2)
+    max_dist = np.sqrt(cx ** 2 + cy ** 2)
+    vignette = np.clip(1 - (dist / max_dist) * 0.5, 0, 1)
+    grainy = (grainy * vignette).astype(np.uint8)
+
+    return cv2.cvtColor(grainy, cv2.COLOR_GRAY2BGR)
 
 LIVE_FILTERS = {
     "THERMAL": make_thermal,
@@ -238,21 +326,32 @@ LIVE_FILTERS = {
     "SKETCH": make_sketch,
     "DUOTONE": make_duotone,
     "NIGHTVISION": make_night_vision,
-    "KALEIDOSCOPE": make_kaleidoscope,
     "SPIDERVERSE": make_spiderverse,
     "EMBOSS": make_emboss,
     "HOLOGRAM": make_hologram,
+    "DRAWN": make_drawn,
+    "DOTSCAN": make_dotscan,
+    "RISO": make_riso,
+    "POPART": make_popart,
+    "ACID": make_acid,
+    "LIQUIDCHROME": make_liquidchrome,
+    "FILMGRAIN": make_filmgrain,
 }
 
 MODES = list(LIVE_FILTERS.keys())
 
+DISPLAY_MODES = ["SINGLE", "TRIPLE"]
 
-# ---------- RENDER ISI KOTAK (window filter di posisi yang sama, no warp) ----------
+TRIPLE_FINGER_PAIRS = [
+    (THUMB_TIP, INDEX_TIP),   # kotak 1: jempol - telunjuk
+    (INDEX_TIP, MIDDLE_TIP),  # kotak 2: telunjuk - jari tengah
+    (MIDDLE_TIP, RING_TIP),   # kotak 3: jari tengah - jari manis
+]
+
 def render_window(frame, filter_fn, quad_pts):
     h, w = frame.shape[:2]
     pts = np.int32(quad_pts)
 
-    # bounding box dari quad, di-clamp ke batas frame
     bx, by, bw, bh = cv2.boundingRect(pts)
     x1 = max(bx, 0)
     y1 = max(by, 0)
@@ -263,14 +362,12 @@ def render_window(frame, filter_fn, quad_pts):
     if bw <= 0 or bh <= 0:
         return frame
 
-    # crop kecil -> filter jalan di sini, bukan di full frame
     crop = frame[y1:y2, x1:x2]
     filtered_crop = filter_fn(crop)
 
     if filtered_crop.shape[:2] != (bh, bw):
         filtered_crop = cv2.resize(filtered_crop, (bw, bh))
 
-    # mask quad
     mask = np.zeros((bh, bw), dtype=np.uint8)
     local_pts = pts - [x1, y1]
     cv2.fillConvexPoly(mask, local_pts, 255)
@@ -285,14 +382,18 @@ def render_window(frame, filter_fn, quad_pts):
     result[y1:y2, x1:x2] = result_crop
     return result
 
-def get_quad_from_hands(hands_pts):
+def get_quad_from_hands(hands_pts, tip_a=THUMB_TIP, tip_b=INDEX_TIP):
     if len(hands_pts) != 2:
         return None
-    hands_sorted = sorted(hands_pts, key=lambda pts: pts[INDEX_TIP][0])
+
+    def hand_x(hand):
+        return (hand[tip_a][0] + hand[tip_b][0]) / 2
+
+    hands_sorted = sorted(hands_pts, key=hand_x)
     left_hand, right_hand = hands_sorted[0], hands_sorted[1]
 
     def top_bottom(hand):
-        a, b = hand[THUMB_TIP], hand[INDEX_TIP]
+        a, b = hand[tip_a], hand[tip_b]
         return (a, b) if a[1] < b[1] else (b, a)
 
     left_top, left_bottom = top_bottom(left_hand)
@@ -304,7 +405,6 @@ def pinch_distance(hand_pts):
     x2, y2 = hand_pts[INDEX_TIP]
     return math.hypot(x2 - x1, y2 - y1)
 
-# ---------- GESTURE: pinch -> buka cepat -> ganti filter ----------
 CLOSE_PINCH = 45
 SPREAD_PINCH = 130
 GESTURE_WINDOW = 1.5
@@ -366,14 +466,21 @@ class GestureSwitcher:
 
 # ---------- MAIN LOOP ----------
 def main():
-    print("Mode yang aktif:", MODES)
-    print("(pencet angka 1-9 buat lompat langsung ke mode 1-9)")
+    print("Mode filter yang aktif:", MODES)
+    print("(pencet angka 1-9 buat lompat langsung ke mode filter 1-9)")
+    print("Mode tampilan:", DISPLAY_MODES, "-> tekan 'm' buat ganti SINGLE <-> TRIPLE")
+    print("Tekan 'f' buat toggle fullscreen, window juga bisa di-resize manual (drag ujungnya)")
 
     cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 540)
 
+    WIN_NAME = "Press Q to stop - Press M to toggle display mode"
+    cv2.namedWindow(WIN_NAME, cv2.WINDOW_NORMAL) 
+    is_fullscreen = False
+
     switcher = GestureSwitcher(MODES)
+    display_mode_idx = 0  # 0 = SINGLE, 1 = TRIPLE
     start_time = time.time()
 
     while True:
@@ -384,7 +491,9 @@ def main():
         h, w, _ = frame.shape
         now = time.time()
 
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        small_frame = cv2.resize(frame, (0, 0), fx=DETECT_SCALE, fy=DETECT_SCALE,
+                                  interpolation=cv2.INTER_LINEAR)
+        rgb = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         timestamp_ms = int((now - start_time) * 1000)
         result = landmarker.detect_for_video(mp_image, timestamp_ms)
@@ -393,28 +502,47 @@ def main():
         pinch_values = []
         if result.hand_landmarks:
             for landmarks in result.hand_landmarks:
-                pts = draw_hand_skeleton(frame, landmarks, w, h)
+                pts = get_hand_points(landmarks, w, h)
                 hands_pts.append(pts)
                 pd = pinch_distance(pts)
                 pinch_values.append(pd)
 
-                tx, ty = pts[THUMB_TIP]
-                ix, iy = pts[INDEX_TIP]
-                color = (0, 255, 0) if pd < CLOSE_PINCH else \
-                        (0, 100, 255) if pd > SPREAD_PINCH else (200, 200, 200)
-                cv2.line(frame, (tx, ty), (ix, iy), color, 2)
-
-        quad = get_quad_from_hands(hands_pts)
         min_pinch = min(pinch_values) if pinch_values else None
-        status_text = switcher.update(min_pinch, now)
+        switcher.update(min_pinch, now)
 
-        if quad:
-            frame = render_window(frame, LIVE_FILTERS[switcher.mode], quad)
+        current_display_mode = DISPLAY_MODES[display_mode_idx]
 
-        cv2.imshow("Press Q to quit", frame)
+        if current_display_mode == "SINGLE":
+            quad = get_quad_from_hands(hands_pts, THUMB_TIP, INDEX_TIP)
+            if quad:
+                frame = render_window(frame, LIVE_FILTERS[switcher.mode], quad)
+        else:  # TRIPLE
+            for i, (tip_a, tip_b) in enumerate(TRIPLE_FINGER_PAIRS):
+                quad_i = get_quad_from_hands(hands_pts, tip_a, tip_b)
+                if quad_i:
+                    filter_name = MODES[(switcher.mode_idx + i) % len(MODES)]
+                    frame = render_window(frame, LIVE_FILTERS[filter_name], quad_i)
+
+        try:
+            _, _, win_w, win_h = cv2.getWindowImageRect(WIN_NAME)
+            if win_w > 0 and win_h > 0 and (win_w, win_h) != (frame.shape[1], frame.shape[0]):
+                frame = cv2.resize(frame, (win_w, win_h))
+        except cv2.error:
+            pass  
+
+        cv2.imshow(WIN_NAME, frame)
         key = cv2.waitKey(1) & 0xFF
         if key == ord("q"):
             break
+        elif key == ord("f"):
+            is_fullscreen = not is_fullscreen
+            if is_fullscreen:
+                cv2.setWindowProperty(WIN_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+            else:
+                cv2.setWindowProperty(WIN_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
+                cv2.resizeWindow(WIN_NAME, w, h)
+        elif key == ord("m"):
+            display_mode_idx = (display_mode_idx + 1) % len(DISPLAY_MODES)
         elif ord("1") <= key <= ord("9"):
             idx = key - ord("1")
             if idx < len(MODES):
